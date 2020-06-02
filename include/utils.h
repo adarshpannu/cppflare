@@ -1,9 +1,5 @@
 //
 //  utils.h
-//  Flora
-//
-//  Created by Adarsh Pannu on 5/14/20.
-//
 
 #ifndef utils_h
 #define utils_h
