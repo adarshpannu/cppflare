@@ -1,4 +1,4 @@
-//  Flora.cpp
+//  main.cpp
 
 #include <iostream>
 #include <fstream>
@@ -23,10 +23,12 @@ template <typename T>
 class DataOp {
 public:
     DataOp(ThreadContext& ctx): _ctx(ctx) {}
+    
+    virtual ~DataOp() { }
+    virtual void Open() { }
     virtual bool HasNext() { return false; }
     
     virtual void Next(T& t) { }
-    virtual void Open() { }
     
     template <typename U>
     auto map(std::function<U(T)>  map_fn) {
@@ -66,6 +68,10 @@ public:
         _parent->Open();
     }
 
+    virtual ~MapOp() {
+        delete _parent;
+    }
+
 private:
     DataOp<T>   *_parent;
     FN_T2U          _map_fn;
@@ -102,12 +108,16 @@ public:
         _it = _vector.begin();
     }
 
+    virtual ~FlatMapOp() {
+        delete _parent;
+    }
+
 private:
-    DataOp<T>                      *_parent;
-    FLATMAP_FN_SIG                 _flatmap_fn;
+    DataOp<T>                           *_parent;
+    FLATMAP_FN_SIG                      _flatmap_fn;
     std::vector<T>                      _vector;
     typename std::vector<T>::iterator   _it;
-    int                            _index;
+    int                                 _index;
 };
 
 class TextFileOp : public DataOp<string> {
@@ -203,6 +213,7 @@ std::vector<string> SplitString(string str) {
     return v;
 }
 
+
 template<typename Functor>
 void f(Functor functor)
 {
@@ -260,13 +271,20 @@ int main(int argc, const char * argv[]) {
 
     INT2INT negate = [](int i) { return -i; };
 
-    auto            tf = (new TextFileOp(ctx, filename)) -> map(strlen);
+    //auto            tf = (new TextFileOp(ctx, filename)) -> map(strlen) -> map(negate);
+    auto            tf = (new TextFileOp(ctx, filename)) -> flatMap(splitString);
+
     int             i;
     string          s;
-        
+
+
+    cout << ">>> HELLO!!!" << endl;
+
     tf->Open();
     while (tf->HasNext()) {
-        tf->Next(i);
-        cout << i << endl;
+        tf->Next(s);
+        //cout << "----: " << s << endl;
     }
+
+    delete tf;
 }
