@@ -18,21 +18,27 @@ public:
 
 template <typename T, typename U> class MapOp;
 template <typename T, typename U> class FlatMapOp;
+template <typename T> class FilterOp;
 
 template <typename T>
 class DataOp {
 public:
     DataOp(ThreadContext& ctx): _ctx(ctx) {}
     
+    T type();
+
     virtual ~DataOp() { }
-    virtual void Open() { }
-    virtual bool HasNext() { return false; }
-    
-    virtual void Next(T& t) { }
+    virtual void Open() { }    
+    virtual bool Next(T& t) = 0;
     
     template <typename U>
     auto map(std::function<U(T)>  map_fn) {
         auto   *d = new MapOp<T, U>(_ctx, this, map_fn);
+        return d;
+    }
+
+    auto filter(std::function<bool(T)>  filter_fn) {
+        auto   *d = new FilterOp<T>(_ctx, this, filter_fn);
         return d;
     }
     
@@ -54,20 +60,20 @@ public:
     MapOp(ThreadContext& ctx, DataOp<T>* parent, FN_T2U map_fn)
     : DataOp<U>(ctx), _parent(parent), _map_fn(map_fn) {}
     
-    virtual bool HasNext() {
-        return _parent->HasNext();
-    }
-    
-    virtual void Next(U& u) {
-        T    t;
-        _parent->Next(t);
-        u = _map_fn(t);
-    }
-    
     virtual void Open() {
         _parent->Open();
     }
 
+    virtual bool Next(U& u) {
+        T    t;
+        if (_parent->Next(t)) {
+            u = _map_fn(t);
+            return true;
+        } else {
+            return false;
+        }
+    }
+    
     virtual ~MapOp() {
         delete _parent;
     }
@@ -77,37 +83,64 @@ private:
     FN_T2U          _map_fn;
 };
 
+template <typename T>
+class FilterOp : public DataOp<T> {
+public:
+    using FILTER_FN = std::function<bool(T)>;
+    
+    FilterOp(ThreadContext& ctx, DataOp<T>* parent, FILTER_FN filter_fn)
+        : DataOp<T>(ctx), _parent(parent), _filter_fn(filter_fn) {}
+    
+        virtual void Open() {
+        _parent->Open();
+    }
+
+    virtual bool Next(T& t) {
+        while (_parent->Next(t)) {
+            if (_filter_fn(t))
+                return true;
+        }
+        return false;
+    }
+
+    virtual ~FilterOp() {
+        delete _parent;
+    }
+
+private:
+    DataOp<T>           *_parent;
+    FILTER_FN           _filter_fn;
+    T                   _cached_value;
+};
+
 template <typename T, typename U>
 class FlatMapOp : public DataOp<U> {
 public:
     using FLATMAP_FN_SIG = std::function<std::vector<U>(T)>;
 
     FlatMapOp(ThreadContext& ctx, DataOp<T>* parent, FLATMAP_FN_SIG flatmap_fn)
-    : DataOp<U>(ctx), _parent(parent), _flatmap_fn(flatmap_fn) {}
-    
-    virtual bool HasNext() {
-        if (_it != _vector.end()) {
-            return true;
-        } else if (_parent->HasNext()) {
-            T    t;
-            _parent->Next(t);
-            _vector = _flatmap_fn(t);
-            _it = _vector.begin();
-            return true;
-        } else {
-            return false;
-        }
-    }
-    
-    virtual void Next(U& u) {
-        u = *_it++;
-    }
+        : DataOp<U>(ctx), _parent(parent), _flatmap_fn(flatmap_fn) {}
     
     virtual void Open() {
         _parent->Open();
         _it = _vector.begin();
     }
 
+    virtual bool Next(U& u) {
+        T    t;
+        if (_it != _vector.end()) {
+            u = *_it++;
+            return true;
+        } else if (_parent->Next(t)) {
+            _vector = _flatmap_fn(t);
+            _it = _vector.begin();
+            u = *_it++;
+            return true;
+        } else {
+            return false;
+        }
+    }
+        
     virtual ~FlatMapOp() {
         delete _parent;
     }
@@ -148,22 +181,16 @@ public:
         _fp.seekg(_range.first);
     }
     
-    bool HasNext() {
+    bool Next(string& line) {
         if (_fp.is_open()) {
-            if (_fp.tellg() < _range.second)
+            if (_fp.tellg() < _range.second) {
+                getline(_fp, line);
                 return true;
-            else {
+            } else {
                 _fp.close();
-                return false;
             }
-        } else {
-            return false;
         }
-    }
-
-    void Next(string& line) {
-        getline(_fp, line);
-        //cout << "> " << line << endl;
+        return false;
     }
     
 private:
@@ -213,24 +240,6 @@ std::vector<string> SplitString(string str) {
     return v;
 }
 
-
-template<typename Functor>
-void f(Functor functor)
-{
-   cout << functor(10) << endl;
-}
-
-int g(int x)
-{
-    return x * x;
-}
-
-void FOO()
-{
-    auto lambda = [] (int x) { return x * 100; };
-    f(lambda); //pass lambda
-}
-
 int main(int argc, const char * argv[]) {
     std::pair <std::string,double> product1;                     // default constructor
     std::vector<int>  v;
@@ -250,10 +259,10 @@ int main(int argc, const char * argv[]) {
     
     auto strlen2 = [](string s) {
         //return std::make_pair(s, s.length());
-        return s.length();
+        return (int) s.length();
     };
     using STR2VECSTR = std::function<std::vector<string>(string)>;
-
+    
     STR2VECSTR splitString = [](string str) {
         std::stringstream       ss(str);
         std::string             token;
@@ -265,25 +274,33 @@ int main(int argc, const char * argv[]) {
         return v;
     };
     
-    auto toUpper = [](string s) { return s.length(); };
+    auto to_Upper = [](string data) { 
+        /*
+        std::for_each(data.begin(), data.end(), [](char & c) { 
+            c = ::toupper(c);
+        });    
+        */
+        return data;
+    };
     
     using INT2INT = std::function<int(int)>;
 
     INT2INT negate = [](int i) { return -i; };
+     
+    std::function<int(string)> len5 = [] (string str) { return str.length() == 5; };
 
     //auto            tf = (new TextFileOp(ctx, filename)) -> map(strlen) -> map(negate);
-    auto            tf = (new TextFileOp(ctx, filename)) -> flatMap(splitString);
-
-    int             i;
-    string          s;
-
+    auto            tf = (new TextFileOp(ctx, filename)) -> flatMap(splitString) -> filter(len5);
+        
+    int            i;
+    string         s;
+    decltype(tf->type())    dt;
 
     cout << ">>> HELLO!!!" << endl;
 
     tf->Open();
-    while (tf->HasNext()) {
-        tf->Next(s);
-        //cout << "----: " << s << endl;
+    while (tf->Next(s)) {
+        cout << ": " << s << endl;
     }
 
     delete tf;
